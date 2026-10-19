@@ -113,7 +113,25 @@ function setBusyBtn(btn, on, text) {
 
 // ── Pemanggil server ──
 function api(fn) { return apiRaw(false, fn, Array.prototype.slice.call(arguments, 1)); }
+let INFLIGHT = {};        // permintaan baca yang sedang jalan → dipakai bersama, tidak dikirim dua kali
+let pendingWrites = 0;    // jumlah simpanan optimistis yang belum dikonfirmasi server
 function apiRaw(senyap, fn, args) {
+  const dk = /^get/.test(fn) ? fn + '|' + JSON.stringify(args) : '';
+  if (!dk) INFLIGHT = {};   // ada penulisan → jangan pernah memakai bacaan yang mulai sebelum perubahan
+  if (dk && INFLIGHT[dk]) {
+    if (senyap) return INFLIGHT[dk];
+    busy(1);
+    return INFLIGHT[dk].then(r => { busy(-1); return r; }, e => { busy(-1); throw e; });
+  }
+  const p = apiKirim(senyap, fn, args);
+  if (dk) {
+    INFLIGHT[dk] = p;
+    const bersih = () => { if (INFLIGHT[dk] === p) delete INFLIGHT[dk]; };
+    p.then(bersih, bersih);
+  }
+  return p;
+}
+function apiKirim(senyap, fn, args) {
   if (!senyap) busy(1);
   const url = (typeof GAS_URL === 'string' ? GAS_URL : '').trim();
   if (!url || /XXXX|ISI_URL/.test(url)) {
@@ -203,11 +221,15 @@ function specs() {
 function swrKey(a) { return a[0] + '|' + JSON.stringify(a.slice(2)); }
 function swrAda(a) { return !!SWR[swrKey(a)]; }
 function swrSet(a, res) { SWR[swrKey(a)] = { res: res, t: Date.now() }; swrSimpan(); }
+let tulisHalaman = null, tulisT = 0;
 function swrClear() {
-  SWR = {}; SWR_EPOCH++;
+  // v4.1: data lama TIDAK dibuang (menu lain tetap tampil instan), hanya ditandai basi lalu disegarkan di latar.
+  Object.keys(SWR).forEach(k => { if (SWR[k]) SWR[k].basi = true; });
+  SWR_EPOCH++; INFLIGHT = {};
+  tulisHalaman = App.page; tulisT = Date.now();
   swrSimpan();
   clearTimeout(pfTimer);
-  pfTimer = setTimeout(prefetchHalaman, 1500);   // isi ulang cache di latar supaya menu berikutnya tetap instan
+  pfTimer = setTimeout(() => prefetchHalaman(true), 250);
 }
 function swrSimpan() {
   clearTimeout(swrTimer);
@@ -241,10 +263,15 @@ function sibuk() {
  * hanya bila isinya berbeda. Tanpa cache → seperti biasa (skeleton + tunggu server). Mengembalikan true bila ada yang tampil.
  */
 async function loadSWR(seq, a, paint, gagal) {
-  const key = swrKey(a), hit = SWR[key], epoch = SWR_EPOCH;
+  const key = swrKey(a), epoch = SWR_EPOCH;
+  let hit = SWR[key];
+  // halaman yang baru saja diubah user: jangan tampilkan data lama sesaat (bisa membingungkan) — tunggu data baru
+  if (hit && hit.basi && tulisHalaman === App.page && Date.now() - tulisT < 10000) hit = null;
   if (hit) paint(hit.res.data, false);
   let res;
   if (hit) {
+    if (!hit.basi && Date.now() - hit.t < 8000) return true;   // masih sangat segar: tidak perlu tanya server lagi
+    if (pendingWrites > 0) return true;                        // ada simpanan yang belum selesai: jangan timpa tampilan
     try { res = await api(...a); } catch (e) { return true; }   // gagal di latar: cache tetap tampil, tanpa toast
     if (!res || !res.success) return true;
   } else {
@@ -269,22 +296,35 @@ function kabarkanBersih(d) {
   }
 }
 /** Muat semua menu lain di latar (berurutan, senyap) sehingga berpindah menu terasa instan. */
-async function prefetchHalaman() {
+async function prefetchHalaman(segera) {
   const id = ++pfId;
-  await new Promise(r => setTimeout(r, 500));
+  await new Promise(r => setTimeout(r, segera ? 0 : 300));
+  if (id !== pfId || !App.token || !App.user || pendingWrites > 0) return;
   const urut = isOwner() ? ['input', 'riwayat', 'stok', 'obat', 'kelola', 'dashboard'] : ['riwayat', 'obat', 'stok', 'input'];
-  for (const pg of urut) {
-    if (id !== pfId || !App.token || !App.user) return;
-    const a = specs()[pg];
-    if (!a || pg === App.page) continue;
-    const k = swrKey(a);
-    if (SWR[k] && Date.now() - SWR[k].t < 20000) continue;
-    const epoch = SWR_EPOCH;
+  const L = specs(), perlu = [];
+  urut.forEach(pg => {
+    const a = L[pg];
+    if (!a || pg === App.page) return;
+    const h = SWR[swrKey(a)];
+    if (h && !h.basi && Date.now() - h.t < 20000) return;
+    perlu.push(a);
+  });
+  if (!perlu.length) return;
+  // v4.1: 3 halaman per permintaan (BATCH), potongan dikirim paralel → semua menu siap dalam ±1 putaran jaringan
+  const potong = [];
+  for (let i = 0; i < perlu.length; i += 3) potong.push(perlu.slice(i, i + 3));
+  const epoch = SWR_EPOCH;
+  await Promise.all(potong.map(async grup => {
     try {
-      const r = await apiRaw(true, ...[a[0], a.slice(1)]);
-      if (r && r.success && epoch === SWR_EPOCH) { kabarkanBersih(r.data); SWR[k] = { res: r, t: Date.now() }; }
-    } catch (e) { return; }
-  }
+      const r = await apiRaw(true, 'getBatch', [App.token, grup.map(a => [a[0], a.slice(2)])]);
+      if (!r || !r.success || !Array.isArray(r.data)) return;
+      if (id !== pfId || epoch !== SWR_EPOCH || pendingWrites > 0) return;
+      r.data.forEach((x, k) => {
+        if (x && x.success === false && x.message === 'SESI_HABIS') { forceLogout('Sesi berakhir. Silakan masuk kembali.'); return; }
+        if (x && x.success) { kabarkanBersih(x.data); SWR[swrKey(grup[k])] = { res: x, t: Date.now() }; }
+      });
+    } catch (e) { /* offline / gagal: cache lama tetap dipakai */ }
+  }));
   swrSimpan();
 }
 
@@ -834,21 +874,32 @@ function submitInput() {
         deplesi_mati: mati, deplesi_afkir: afkir, pakan_kg: pakan, telur_butir: telur, telur_a: gNum[0], telur_b: gNum[1], telur_bs: gNum[2],
         telur_kg: kgFinal, catatan: $('#f_catatan').value.trim()
       };
-      const res = await call('simpanCatatanHarian', App.token, payload);
-      if (!res) return;
-      closeSheet();
-      toast(res.message, 'success');
-      syncFlok(res.data.flok);
-      resetInputForm();
-      // Tampilkan kartu "sudah tersimpan" SEKARANG dari data yang baru dikirim; server dicek ulang diam-diam di latar
+      // v4.1 OPTIMISTIC UI: kartu "sudah tersimpan" tampil SEKARANG; server menyimpan di latar.
+      // Bila server menolak, tampilan dikembalikan ke form semula dan alasannya ditampilkan.
+      const formLama = App.input.form, cacheLama = SWR[swrKey(specs().input)];
       const rec = {
         catatan_id: '', jumlah_catatan: 1, deplesi_mati: mati, deplesi_afkir: afkir, pakan_kg: pakan, telur_butir: telur,
         telur_a: gNum[0], telur_b: gNum[1], telur_bs: gNum[2], telur_kg: kgFinal,
         berat_telur_rata2_gram: telur > 0 ? Math.round(beratFinal * 100) / 100 : 0,
         catatan: payload.catatan, diinput_oleh: App.user.nama, waktu_input: hariIniWIB() + ' ' + jamWIB()
       };
-      swrSet(specs().input, { success: true, data: { tanggal: ctx.tanggal, flok: res.data.flok, catatan: rec } });
+      const kunciInput = specs().input;
+      pendingWrites++;
+      closeSheet();
+      toast('Tersimpan ✓', 'success');
+      resetInputForm();
+      swrSet(kunciInput, { success: true, data: { tanggal: ctx.tanggal, flok: ctx.flok, catatan: rec } });
       renderInput();
+      call('simpanCatatanHarian', App.token, payload).then(res => {
+        pendingWrites = Math.max(0, pendingWrites - 1);
+        if (res) { syncFlok(res.data.flok); swrSet(specs().input, { success: true, data: { tanggal: ctx.tanggal, flok: res.data.flok, catatan: rec } }); return; }
+        // gagal → kembalikan
+        const k = swrKey(kunciInput);
+        if (cacheLama) SWR[k] = cacheLama; else delete SWR[k];
+        App.input.form = formLama;
+        if (App.page === 'input') renderInput();
+        toast('Simpan dibatalkan: ' + (App.lastError || 'server tidak merespons') + ' Data belum tersimpan, silakan kirim ulang.', 'error');
+      });
     }
   });
 }
@@ -2283,3 +2334,23 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
   hideBoot();
 });
+
+// ── v4.1: jaga server GAS tetap "hangat" & segarkan saat aplikasi dibuka kembali ──
+(function () {
+  let terakhirWarm = 0;
+  function warm() {
+    const url = (typeof GAS_URL === 'string' ? GAS_URL : '').trim();
+    if (!url || /XXXX|ISI_URL/.test(url) || document.hidden) return;
+    if (Date.now() - terakhirWarm < 60000) return;
+    terakhirWarm = Date.now();
+    try { fetch(url + (url.indexOf('?') < 0 ? '?' : '&') + 'ping=1', { mode: 'no-cors', cache: 'no-store' }).catch(() => {}); } catch (e) { /* diabaikan */ }
+  }
+  warm();                                     // saat halaman dibuka: bangunkan server sebelum user login/klik
+  setInterval(warm, 4 * 60 * 1000);           // lalu tiap 4 menit selama tab terbuka
+  let terakhirTampil = Date.now();
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) { terakhirTampil = Date.now(); return; }
+    warm();
+    if (App.token && App.user && Date.now() - terakhirTampil > 60000) prefetchHalaman(true);   // balik ke aplikasi → data diperbarui diam-diam
+  });
+})();
