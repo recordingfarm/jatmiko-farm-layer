@@ -117,7 +117,7 @@ let INFLIGHT = {};        // permintaan baca yang sedang jalan → dipakai bersa
 let writeChain = Promise.resolve();   // semua simpanan optimistis berjalan BERURUTAN (tambah input tidak mendahului simpan rekap)
 function antreanTulis(fn) { const p = writeChain.then(fn, fn); writeChain = p.then(() => {}, () => {}); return p; }
 let pendingWrites = 0;    // jumlah simpanan optimistis yang belum dikonfirmasi server
-function apiRaw(senyap, fn, args) {
+function apiRaw(senyap, fn, args, tmo) {
   const dk = /^get/.test(fn) ? fn + '|' + JSON.stringify(args) : '';
   if (!dk) INFLIGHT = {};   // ada penulisan → jangan pernah memakai bacaan yang mulai sebelum perubahan
   if (dk && INFLIGHT[dk]) {
@@ -125,7 +125,7 @@ function apiRaw(senyap, fn, args) {
     busy(1);
     return INFLIGHT[dk].then(r => { busy(-1); return r; }, e => { busy(-1); throw e; });
   }
-  const p = apiKirim(senyap, fn, args);
+  const p = apiKirim(senyap, fn, args, tmo);
   if (dk) {
     INFLIGHT[dk] = p;
     const bersih = () => { if (INFLIGHT[dk] === p) delete INFLIGHT[dk]; };
@@ -133,7 +133,7 @@ function apiRaw(senyap, fn, args) {
   }
   return p;
 }
-function apiKirim(senyap, fn, args) {
+function apiKirim(senyap, fn, args, tmo) {
   if (!senyap) busy(1);
   const url = (typeof GAS_URL === 'string' ? GAS_URL : '').trim();
   if (!url || /XXXX|ISI_URL/.test(url)) {
@@ -141,7 +141,7 @@ function apiKirim(senyap, fn, args) {
     return Promise.reject(new Error('GAS_URL belum diisi. Buka js/config.js lalu isi dengan URL /exec dari Apps Script.'));
   }
   const ctl = new AbortController();
-  const tmo = setTimeout(() => ctl.abort(), 90000);
+  const tmoId = setTimeout(() => ctl.abort(), tmo || 90000);
   return fetch(url, {
     method: 'POST',
     // text/plain = "simple request": tidak memicu preflight CORS yang tidak didukung Apps Script
@@ -169,7 +169,7 @@ function apiKirim(senyap, fn, args) {
       if (err && err.name === 'AbortError') throw new Error('Server terlalu lama menjawab. Coba lagi.');
       throw err;
     })
-    .finally(() => clearTimeout(tmo));
+    .finally(() => clearTimeout(tmoId));
 }
 
 /** Panggil server; bila gagal tampilkan toast (dengan penyebab sebenarnya) dan kembalikan null. */
@@ -441,6 +441,28 @@ function showLoginErr(m) {
   e.hidden = false;
 }
 
+const jeda = ms => new Promise(r => setTimeout(r, ms));
+/** Kirim login dengan coba-ulang otomatis (server Apps Script sering "bangun" lambat di permintaan pertama). */
+async function kirimLogin(u, p, btn) {
+  let err;
+  for (let i = 0; i < 3; i++) {
+    try {
+      // percobaan 1: login + data awal sekaligus; percobaan berikutnya: login ringan saja (lebih pasti selesai)
+      return await apiRaw(true, 'loginPin', [u, p, i === 0 ? true : false], i === 0 ? 35000 : 25000);
+    } catch (e) {
+      err = e;
+      if (e && e.message === 'SESI_HABIS') throw e;
+      setBusyBtn(btn, true, i === 0 ? 'Server sedang bangun, mencoba lagi...' : 'Mencoba lagi (' + (i + 1) + '/3)...');
+      await jeda(700);
+    }
+  }
+  throw err;
+}
+function detailGalat(e) {
+  const m = String((e && e.message) || e || '').replace(/^(Error|Exception|TypeError):\s*/i, '').slice(0, 140);
+  if (/Failed to fetch|NetworkError|Load failed/i.test(m)) return 'tidak ada jawaban dari server (jaringan atau server belum siap)';
+  return m;
+}
 async function doLogin(ev) {
   ev.preventDefault();
   const u = $('#lg_user').value.trim();
@@ -450,15 +472,26 @@ async function doLogin(ev) {
   const btn = $('#lg_btn');
   const remember = $('#lg_remember').checked;
   setBusyBtn(btn, true, 'Memeriksa...');
+  let res = null;
   try {
-    const res = await api('loginPin', u, p, true);   // v4.8: sekaligus data awal (1 putaran)
+    res = await kirimLogin(u, p, btn);
+  } catch (e) {
+    showLoginErr('Belum bisa terhubung ke server: ' + detailGalat(e) + '. Tekan Masuk sekali lagi; kalau masih gagal, periksa internet.');
+    setBusyBtn(btn, false);
+    return;
+  }
+  try {
     if (!res.success) { showLoginErr(res.message); return; }
     App.token = res.data.token;
     if (remember) store.set('agl_token', App.token); else store.del('agl_token');
-    if (res.data.boot && res.data.boot.user && res.data.boot.floks) tampilkanApp(res.data.boot, res.data.pra);
-    else await enterApp();   // server versi lama: cara lama
+    if (res.data.boot && res.data.boot.user && res.data.boot.floks) { tampilkanApp(res.data.boot, res.data.pra); return; }
+    let galat = null;
+    for (let i = 0; i < 3; i++) {   // login sudah berhasil; muat data awal dengan coba-ulang
+      try { await enterApp(); galat = null; break; } catch (e) { galat = e; setBusyBtn(btn, true, 'Memuat data (' + (i + 2) + '/3)...'); await jeda(700); }
+    }
+    if (galat) showLoginErr('Login berhasil, tetapi data belum termuat: ' + detailGalat(galat) + '. Tekan Masuk lagi.');
   } catch (e) {
-    showLoginErr('Tidak dapat terhubung ke server. Periksa koneksi internet Anda.');
+    showLoginErr('Terjadi kesalahan saat membuka aplikasi: ' + detailGalat(e) + '. Muat ulang halaman (Ctrl+Shift+R) lalu coba lagi.');
   } finally {
     setBusyBtn(btn, false);
   }
@@ -2532,7 +2565,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v4.8 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v4.9 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();
