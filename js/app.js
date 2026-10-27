@@ -464,7 +464,7 @@ function loginBalap(u, p, btn) {
     const t3 = setTimeout(() => { if (!selesai) setBusyBtn(btn, true, 'Menghubungi server...'); }, 2500);
     timer = setTimeout(() => {
       if (selesai || mulai >= 2) return;
-      setBusyBtn(btn, true, 'Server lambat, membuka jalur kedua...');
+      setBusyBtn(btn, true, 'Menyiapkan server, sebentar ya...');
       kirim(false);
     }, 6000);
     kirim(true);
@@ -2607,7 +2607,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v5.0 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v5.1 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();

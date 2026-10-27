@@ -1,8 +1,8 @@
-/* Jatmiko Farm Layer — Service Worker v5.0
+/* Jatmiko Farm Layer — Service Worker v5.1
  * - Halaman (HTML): jaringan dulu (maks 3 dtk), lalu cadangan dari cache → buka cepat walau sinyal jelek.
  * - CSS/JS/gambar/font/ikon: tampil dari cache seketika, diperbarui diam-diam di latar.
  * - Permintaan ke Apps Script (data) TIDAK pernah disentuh. */
-const V = 'agl-v5.0';
+const V = 'agl-v5.1';
 self.addEventListener('install', () => { self.skipWaiting(); });
 self.addEventListener('activate', e => {
   e.waitUntil(caches.keys().then(ks => Promise.all(ks.filter(k => k !== V).map(k => caches.delete(k)))).then(() => self.clients.claim()));
