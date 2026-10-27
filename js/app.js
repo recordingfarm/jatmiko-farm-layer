@@ -1342,24 +1342,31 @@ function paintRiwayatList() {
     if (!items.length) { box.innerHTML = '<section class="card empty"><i class="bi bi-inbox"></i><strong>Belum ada catatan</strong><p class="sm">Catatan harian yang sesuai filter akan tampil di sini.</p></section>'; return; }
     let last = '';
     const totalTgl = {};
-    items.forEach(r => { totalTgl[r.tanggal] = (totalTgl[r.tanggal] || 0) + r.telur_butir; });
+    const logAda = r => !owner && String(r.telur_log || '') !== '';   // anak kandang: tampil per inputan, bukan total
+    items.forEach(r => { totalTgl[r.tanggal] = (totalTgl[r.tanggal] || 0) + (logAda(r) ? String(r.telur_log).split(';').length : r.telur_butir); });
+    const perInput = r => '<div class="input-list" style="display:flex;flex-direction:column;gap:6px;margin:8px 0">' + String(r.telur_log).split(';').map((s, i) => {
+      const x = s.split('|');
+      return '<div style="display:flex;justify-content:space-between;gap:10px;padding:8px 12px;border-radius:12px;background:var(--card);border:1px solid var(--border)"><span class="sm muted">Input ' + (i + 1) + ' • ' + esc(x[0] || '') + '</span>' +
+        '<strong class="sm">' + fInt(x[1]) + ' tray • ' + fInt(x[2]) + ' butir • ' + fDec(Number(x[3]), 1) + ' kg</strong></div>';
+    }).join('') + '</div>';
     items.forEach(r => {
       if (r.tanggal !== last) {
         last = r.tanggal;
-        html += '<div class="day-head"><strong>' + esc(tglPendek(r.tanggal)) + '</strong><span class="badge b-sky"><i class="bi bi-egg-fried"></i> ' + fInt(totalTgl[r.tanggal]) + ' butir</span></div>';
+        html += '<div class="day-head"><strong>' + esc(tglPendek(r.tanggal)) + '</strong><span class="badge b-sky"><i class="bi bi-egg-fried"></i> ' + fInt(totalTgl[r.tanggal]) + (logAda(r) ? ' input' : ' butir') + '</span></div>';
       }
       const tot = r.deplesi_mati + r.deplesi_afkir;
       html += '<article class="rec"><div class="rec-top"><span class="badge b-pri"><i class="bi bi-calendar-check"></i> ' + (r.sesi === 'PAGI' || r.sesi === 'SORE' ? cap(r.sesi) + ' (lama)' : 'Harian') + '</span>' +
         '<span class="meta">Umur ' + r.umur_minggu + ' Mgg • ' + esc(r.diinput_oleh) + ' • ' + esc((r.waktu_input || '').slice(11, 16)) + '</span>' +
         (owner ? '<div class="rec-actions"><button class="icon-btn sm" aria-label="Koreksi catatan" onclick="editCatatan(\'' + esc(r.catatan_id) + '\')"><i class="bi bi-pencil"></i></button>' +
           '<button class="icon-btn sm danger" aria-label="Hapus catatan" onclick="hapusItem(\'harian\',\'' + esc(r.catatan_id) + '\')"><i class="bi bi-trash3"></i></button></div>' : '') + '</div>' +
+        (logAda(r) ? perInput(r) + '<div class="rec-grid"><div><small>Deplesi</small><strong>' + tot + '</strong></div><div><small>Pakan</small><strong>' + fDec(r.pakan_kg, 1) + ' kg</strong></div></div>' :
         '<div class="rec-grid"><div><small>Telur</small><strong>' + fInt(r.telur_butir) + '</strong></div>' +
         '<div><small>Rata² Bobot</small><strong>' + (r.telur_butir > 0 ? fDec(r.berat_telur_rata2_gram, 1) + ' g' : '-') + '</strong></div>' +
         '<div><small>Deplesi</small><strong>' + tot + '</strong></div>' +
-        '<div><small>Pakan</small><strong>' + fDec(r.pakan_kg, 1) + ' kg</strong></div></div>' +
-        '<p class="xs muted">' + (gradeTxt(r) ? gradeTxt(r) + ' • ' : '') + 'Total telur ' + fDec(r.telur_kg, 1) + ' kg' + (tot > 0 ? ' • Mati ' + r.deplesi_mati + ' • Afkir ' + r.deplesi_afkir : '') + '</p>' +
+        '<div><small>Pakan</small><strong>' + fDec(r.pakan_kg, 1) + ' kg</strong></div></div>') +
+        (logAda(r) ? (tot > 0 ? '<p class="xs muted">Mati ' + r.deplesi_mati + ' • Afkir ' + r.deplesi_afkir + '</p>' : '') : '<p class="xs muted">' + (gradeTxt(r) ? gradeTxt(r) + ' • ' : '') + 'Total telur ' + fDec(r.telur_kg, 1) + ' kg' + (tot > 0 ? ' • Mati ' + r.deplesi_mati + ' • Afkir ' + r.deplesi_afkir : '') + '</p>') +
         (r.catatan ? '<p class="rec-note">' + esc(r.catatan) + '</p>' : '') +
-        (r.diubah_oleh ? '<p class="xs muted"><i class="bi bi-pencil-square"></i> Dikoreksi ' + esc(r.diubah_oleh) + ' • ' + esc((r.waktu_ubah || '').slice(0, 16)) + '</p>' : '') + '</article>';
+        (r.diubah_oleh && !logAda(r) ? '<p class="xs muted"><i class="bi bi-pencil-square"></i> Dikoreksi ' + esc(r.diubah_oleh) + ' • ' + esc((r.waktu_ubah || '').slice(0, 16)) + '</p>' : '') + '</article>';
     });
   } else {
     const items = R.data.obat.filter(r =>
@@ -2520,7 +2527,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v4.6 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v4.7 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();
