@@ -155,6 +155,19 @@ function apiRaw(senyap, fn, args, tmo) {
   }
   return p;
 }
+/**
+ * v5.4 — Penulisan ulang sheet flok dilakukan server di latar belakang. Setelah pengguna berhenti menyimpan ±4 dtk,
+ * aplikasi memicunya sekali (beberapa simpanan = 1 sinkron). Senyap: gagal pun tidak mengganggu apa pun.
+ */
+let sinkTimer = null;
+function jadwalSinkron(ms) {
+  clearTimeout(sinkTimer);
+  sinkTimer = setTimeout(() => {
+    if (!App.token) return;
+    if (pendingWrites > 0) { jadwalSinkron(2500); return; }
+    apiKirim(true, 'sinkronTertunda', [App.token], 40000).catch(() => {});
+  }, ms || 4000);
+}
 function apiKirim(senyap, fn, args, tmo) {
   if (!senyap) busy(1);
   const url = (typeof GAS_URL === 'string' ? GAS_URL : '').trim();
@@ -180,6 +193,7 @@ function apiKirim(senyap, fn, args, tmo) {
       let res;
       try { res = JSON.parse(txt); } catch (e) { throw new Error('Jawaban server bukan JSON (cek Deploy: Who has access = Anyone).'); }
       if (!senyap) busy(-1);
+      if (res && res.success && !/^(get|loginPin|logout|sinkronTertunda)/.test(fn)) jadwalSinkron(4000);
       if (res && res.success === false && res.message === 'SESI_HABIS') {
         forceLogout('Sesi berakhir. Silakan masuk kembali.');
         throw new Error('SESI_HABIS');
@@ -567,6 +581,7 @@ function tampilkanApp(d, pra) {
     if (x && x.r && x.r.success) SWR[swrKey([x.f, App.token].concat(x.a))] = { res: x.r, t: Date.now() };
   });
   swrSimpan();
+  jadwalSinkron(8000);   // v5.4: rapikan sheet flok bila ada yang tertunda dari sesi sebelumnya
   navigateTo(isOwner() ? 'dashboard' : 'input');
   prefetchHalaman();
   if (isOwner()) muatChart();   // pemilik: siapkan grafik di latar
@@ -1540,7 +1555,7 @@ async function simpanFormHarian() {
   if (!res) return;
   closeSheet();
   toast(res.message, 'success');
-  await refreshBootstrap();
+  refreshBootstrap();   // v5.4: tidak ditunggu (data tampil duluan, header menyusul)
   if (o.balik === 'kelola') muatDataEdit(); else renderRiwayat();
 }
 function editCatatan(id) {
@@ -1553,11 +1568,35 @@ function hapusItem(jenis, id, balik) {
     note: 'Catatan akan disembunyikan dari laporan dan populasi dihitung ulang. Data lama tetap tersimpan di Sheets sebagai arsip.',
     rows: [],
     onOk: async () => {
+      // v5.4: hapus OPTIMISTIS — baris langsung hilang, server mengerjakan di latar; gagal → baris kembali + pesan alasan
+      const R = App.riwayat, kunciR = specs().riwayat, cacheLama = SWR[swrKey(kunciR)];
+      const kolom = jenis === 'obat' ? 'obat' : 'harian', idKol = jenis === 'obat' ? 'id' : 'catatan_id';
+      const salin = R.data && Array.isArray(R.data[kolom]) ? R.data[kolom].slice() : null;
+      if (balik !== 'kelola' && salin) {
+        closeSheet();
+        R.data[kolom] = salin.filter(x => String(x[idKol]) !== String(id));
+        if (cacheLama && cacheLama.res && cacheLama.res.data && Array.isArray(cacheLama.res.data[kolom])) {
+          cacheLama.res = Object.assign({}, cacheLama.res, { data: Object.assign({}, cacheLama.res.data, { [kolom]: R.data[kolom] }) });
+          SWR[swrKey(kunciR)] = cacheLama;
+        }
+        toast('Dihapus ✓', 'success');
+        paintRiwayat();
+        pendingWrites++;
+        antreanTulis(() => call('hapusCatatan', App.token, jenis, id)).then(res => {
+          pendingWrites = Math.max(0, pendingWrites - 1);
+          if (res) { refreshBootstrap(); if (App.page === 'riwayat') renderRiwayat(); return; }
+          if (R.data) R.data[kolom] = salin;
+          if (cacheLama) SWR[swrKey(kunciR)] = cacheLama;
+          if (App.page === 'riwayat') paintRiwayat();
+          toast('Hapus dibatalkan: ' + (App.lastError || 'server tidak merespons') + ' Data tidak terhapus.', 'error');
+        });
+        return;
+      }
       const res = await call('hapusCatatan', App.token, jenis, id);
       if (!res) return;
       closeSheet();
       toast(res.message, 'success');
-      await refreshBootstrap();
+      refreshBootstrap();
       if (balik === 'kelola') muatDataEdit(); else renderRiwayat();
     }
   });
@@ -1666,10 +1705,6 @@ function muatChart() {
 function drawCharts(d) {
   if (typeof Chart === 'undefined') {
     muatChart().then(ok => { if (ok && App.page === 'dashboard') drawCharts(d); else if (!ok) $$('.chart-box').forEach(b => { b.innerHTML = '<p class="muted sm" style="padding:24px;text-align:center">Pustaka grafik gagal dimuat. Periksa koneksi internet lalu muat ulang.</p>'; }); });
-    return;
-  }
-  if (false) {
-    $$('.chart-box').forEach(b => { b.innerHTML = '<p class="muted sm" style="padding:24px;text-align:center">Pustaka grafik gagal dimuat. Periksa koneksi internet lalu muat ulang.</p>'; });
     return;
   }
   const dark = document.documentElement.getAttribute('data-theme') === 'dark';
@@ -2629,7 +2664,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v5.3 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v5.4 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();
