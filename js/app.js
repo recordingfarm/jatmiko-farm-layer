@@ -674,7 +674,7 @@ function tambahInputSheet() {
   openSheet('Tambah Input Eggtray',
     '<p class="muted sm">Ditambahkan ke rekap hari ini. Saat ini: <strong>' + fInt(rec.telur_butir) + ' butir • ' + fDec(rec.telur_kg, 1) + ' kg</strong>.</p>' +
     '<div class="form-grid two" style="margin-top:10px">' +
-    '<div><label class="lbl" for="ti_tray">Eggtray</label><input id="ti_tray" class="input" type="number" inputmode="numeric" min="0" step="1" value="' + TRAY_PER_INPUT + '" oninput="hitungTambahInput()"></div>' +
+    '<div><label class="lbl" for="ti_tray">Eggtray</label><input id="ti_tray" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="mis. 8" oninput="hitungTambahInput()"></div>' +
     '<div><label class="lbl" for="ti_lepas">Butir lepas</label><input id="ti_lepas" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="0" oninput="hitungTambahInput()"></div>' +
     '<div><label class="lbl" for="ti_kg">Berat (kg)</label><input id="ti_kg" class="input" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0" oninput="hitungTambahInput()"></div></div>' +
     '<p class="field-hint" id="ti_info" style="margin-top:10px"></p>' +
@@ -726,7 +726,7 @@ function lockedCard(rec, tanggal) {
     (rec.catatan ? '<p class="rec-note" style="margin-top:12px">' + esc(rec.catatan) + '</p>' : '') +
     '<p class="sheet-note" style="margin-top:12px">' +
     (isOwner() ? 'Untuk mengoreksi data ini, buka menu Riwayat atau Kelola → Edit → Data Harian.' : 'Rekap harian tidak dapat diubah. ' + (bisaTambahTelur(rec, tanggal) ? 'Eggtray tambahan dicatat lewat tombol Tambah input. ' : '') + 'Hubungi pemilik kandang bila ada kesalahan input.') + '</p>' +
-    (bisaTambahTelur(rec, tanggal) ? '<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="tambahInputSheet()"><i class="bi bi-plus-circle"></i> Tambah input (+' + TRAY_PER_INPUT + ' eggtray)</button>' : '') +
+    (bisaTambahTelur(rec, tanggal) ? '<button class="btn btn-primary btn-block" style="margin-top:12px" onclick="tambahInputSheet()"><i class="bi bi-plus-circle"></i> Tambah input</button>' : '') +
     (isOwner() ? '<button class="btn btn-soft btn-block" style="margin-top:12px" onclick="navigateTo(\'riwayat\')">Buka Riwayat</button>' : '') +
     '</section>';
 }
