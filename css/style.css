@@ -532,3 +532,6 @@ textarea.input { padding: 12px 14px; min-height: 96px; resize: vertical; line-he
 .chart-card.wide { grid-column: 1 / -1; }
 .chart-box.tall { height: 380px; }
 @media (min-width: 900px) { .chart-box.tall { height: 460px; } }
+/* v4.6: tap langsung terasa (tanpa jeda 300ms & kilatan abu-abu) */
+a, button, .btn, .chip, .step-btn, [role="tab"], [data-page], select, input, label { touch-action: manipulation; -webkit-tap-highlight-color: transparent; }
+.btn:active, .step-btn:active, .chip:active { transform: scale(.97); }

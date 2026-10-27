@@ -114,6 +114,8 @@ function setBusyBtn(btn, on, text) {
 // ── Pemanggil server ──
 function api(fn) { return apiRaw(false, fn, Array.prototype.slice.call(arguments, 1)); }
 let INFLIGHT = {};        // permintaan baca yang sedang jalan → dipakai bersama, tidak dikirim dua kali
+let writeChain = Promise.resolve();   // semua simpanan optimistis berjalan BERURUTAN (tambah input tidak mendahului simpan rekap)
+function antreanTulis(fn) { const p = writeChain.then(fn, fn); writeChain = p.then(() => {}, () => {}); return p; }
 let pendingWrites = 0;    // jumlah simpanan optimistis yang belum dikonfirmasi server
 function apiRaw(senyap, fn, args) {
   const dk = /^get/.test(fn) ? fn + '|' + JSON.stringify(args) : '';
@@ -676,15 +678,18 @@ function butirEff(t, idButir, isi) {
   return isNaN(v) ? NaN : v;
 }
 /** Form tambahan eggtray ke rekap hari ini. */
-function tambahInputSheet() {
+function tambahInputSheet(isi) {
   const ctx = App.input.ctx, rec = ctx && ctx.catatan;
   if (!rec) return;
+  isi = isi || {};
+  const nv = v => (v === undefined || v === null || v === '' ? '' : ' value="' + esc(String(v)) + '"');
   openSheet('Tambah Input Eggtray',
     '<p class="muted sm">Ditambahkan ke rekap hari ini. Saat ini: <strong>' + fInt(rec.telur_butir) + ' butir • ' + fDec(rec.telur_kg, 1) + ' kg</strong>.</p>' +
     '<div class="form-grid two" style="margin-top:10px">' +
-    '<div><label class="lbl" for="ti_tray">Eggtray</label><input id="ti_tray" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="mis. 8" oninput="hitungTambahInput()"></div>' +
-    '<div><label class="lbl" for="ti_lepas">Butir</label><input id="ti_lepas" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="0" oninput="hitungTambahInput()"></div>' +
-    '<div><label class="lbl" for="ti_kg">Berat (kg)</label><input id="ti_kg" class="input" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0" oninput="hitungTambahInput()"></div></div>' +
+    '<div><label class="lbl" for="ti_tray">Eggtray</label><input id="ti_tray" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="mis. 8"' + nv(isi.t) + ' oninput="hitungTambahInput()"></div>' +
+    '<div><label class="lbl" for="ti_lepas">Butir</label><input id="ti_lepas" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="otomatis"' + nv(isi.l) + ' oninput="hitungTambahInput()"></div>' +
+    '<div><label class="lbl" for="ti_kg">Berat (kg)</label><input id="ti_kg" class="input" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0"' + nv(isi.k) + ' oninput="hitungTambahInput()"></div></div>' +
+    (isi.err ? '<p class="field-error" role="alert" style="margin-top:10px;color:var(--danger-text,#b42318);font-weight:700">' + esc(isi.err) + '</p>' : '') +
     '<p class="field-hint" id="ti_info" style="margin-top:10px"></p>' +
     '<div class="sheet-actions"><button class="btn btn-soft" onclick="closeSheet()">Batal</button>' +
     '<button class="btn btn-primary" id="ti_save" onclick="simpanTambahInput()">Tambahkan</button></div>');
@@ -699,22 +704,45 @@ function hitungTambahInput() {
   const butir = rec.telur_butir + l, kg = Math.round((rec.telur_kg + k) * 100) / 100;
   el.textContent = 'Tambahan ' + fInt(l) + ' butir. Total jadi ' + fInt(butir) + ' butir • ' + fDec(kg, 1) + ' kg' + (butir > 0 && kg > 0 ? ' • ' + fDec(kg * 1000 / butir, 1) + ' gr/butir' : '') + '.';
 }
-async function simpanTambahInput() {
-  const ctx = App.input.ctx;
+function simpanTambahInput() {
+  const ctx = App.input.ctx, rec = ctx && ctx.catatan;
+  if (!rec) return;
+  const isiTray = cfgNum('butir_per_tray', 30) || 30;
   const t = numVal('ti_tray'), k = numVal('ti_kg');
-  const l = butirEff(t || 0, 'ti_lepas', cfgNum('butir_per_tray', 30) || 30);
+  const l = butirEff(t || 0, 'ti_lepas', isiTray);
   const ok = v => isNaN(v) || (v >= 0 && Number.isInteger(v));
   if (!ok(t) || isNaN(l) || !ok(l)) { toast('Eggtray dan butir harus bilangan bulat (0 atau lebih).', 'error'); return; }
   if (!isNaN(k) && k < 0) { toast('Berat tidak boleh negatif.', 'error'); return; }
   if (!((t || 0) > 0 || (l || 0) > 0)) { toast('Isi minimal 1 eggtray atau 1 butir.', 'error'); return; }
-  const btn = $('#ti_save');
-  setBusyBtn(btn, true, 'Menyimpan...');
-  const res = await call('tambahTelurHarian', App.token, { flok_id: ctx.flok.flok_id, telur_tray: t || 0, telur_butir_lepas: l, telur_kg: isNaN(k) ? 0 : k });
-  setBusyBtn(btn, false);
-  if (!res) return;
+  const kk = isNaN(k) ? 0 : Math.round(k * 100) / 100, tt = t || 0;
+  const butir = (Number(rec.telur_butir) || 0) + l, kg = Math.round(((Number(rec.telur_kg) || 0) + kk) * 100) / 100;
+  if (butir > 0 && kg > 0 && (kg * 1000 / butir < 30 || kg * 1000 / butir > 100)) {
+    toast('Rata-rata bobot ' + fDec(kg * 1000 / butir, 1) + ' gr/butir tidak wajar (harus 30–100 gr). Periksa butir atau kg.', 'error'); return;
+  }
+  const kunci = specs().input, cacheLama = SWR[swrKey(kunci)];
+  const baru = Object.assign({}, rec, {
+    telur_tray: (Number(rec.telur_tray) || 0) + tt, telur_butir_lepas: butir, telur_butir: butir, telur_kg: kg,
+    berat_telur_rata2_gram: butir > 0 ? Math.round(kg * 100000 / butir) / 100 : 0,
+    telur_log: (rec.telur_log ? rec.telur_log + ';' : '') + jamWIB().slice(0, 5) + '|' + tt + '|' + l + '|' + kk
+  });
+  const data = { tanggal: ctx.tanggal, flok: ctx.flok, std_berat_gr: ctx.std_berat_gr, catatan: baru };
+  // OPTIMISTIS: tampilan langsung berubah, server menyusul di latar (berurutan dengan simpanan lain)
+  pendingWrites++;
   closeSheet();
-  toast(res.message, 'success');
+  toast('Ditambahkan ✓', 'success');
+  swrSet(kunci, { success: true, data: data });
   renderInput();
+  antreanTulis(() => call('tambahTelurHarian', App.token, { flok_id: ctx.flok.flok_id, telur_tray: tt, telur_butir_lepas: l, telur_kg: kk })).then(res => {
+    pendingWrites = Math.max(0, pendingWrites - 1);
+    if (res) { swrSet(specs().input, { success: true, data: data }); return; }
+    const sk = swrKey(kunci);
+    if (cacheLama) SWR[sk] = cacheLama; else delete SWR[sk];
+    const err = App.lastError || 'server tidak merespons';
+    if (App.page === 'input') {
+      App.input.ctx = Object.assign({}, ctx);
+      renderInput().then(() => tambahInputSheet({ t: tt || '', l: t ? (l === Math.round(tt * isiTray) ? '' : l) : l, k: kk || '', err: 'Gagal ditambahkan: ' + err + ' Data belum tersimpan, silakan coba lagi.' }));
+    } else toast('Tambah input dibatalkan: ' + err, 'error');
+  });
 }
 
 function lockedCard(rec, tanggal) {
@@ -1074,7 +1102,7 @@ function submitInput() {
       resetInputForm();
       swrSet(kunciInput, { success: true, data: { tanggal: ctx.tanggal, flok: ctx.flok, std_berat_gr: ctx.std_berat_gr, catatan: rec } });
       renderInput();
-      call('simpanCatatanHarian', App.token, payload).then(res => {
+      antreanTulis(() => call('simpanCatatanHarian', App.token, payload)).then(res => {
         pendingWrites = Math.max(0, pendingWrites - 1);
         if (res) { syncFlok(res.data.flok); swrSet(specs().input, { success: true, data: { tanggal: ctx.tanggal, flok: res.data.flok, std_berat_gr: ctx.std_berat_gr, catatan: rec } }); return; }
         // gagal → kembalikan
@@ -1243,16 +1271,24 @@ function submitObat() {
       ['Produk', F.nama.trim()], ['Metode', F.metode], ['Dosis', fDec(k.dosis, 1) + ' dosis / ekor'],
       ['Kebutuhan flok', '~' + fInt(k.need) + ' dosis'], ['Waktu', cap(F.waktu)], ['Petugas', F.petugas]
     ],
-    onOk: async () => {
-      const res = await call('simpanObatVaksin', App.token, {
+    onOk: () => {
+      const payload = {
         flok_id: ctx.flok.flok_id, tanggal: isOwner() ? ctx.tanggal : '', jenis: F.jenis, nama_produk: F.nama.trim(),
         metode: F.metode, dosis_per_ekor: k.dosis, waktu: F.waktu, petugas: F.petugas, catatan: F.catatan.trim()
-      });
-      if (!res) return;
+      };
+      const formLama = Object.assign({}, F), jenis = F.jenis;
+      pendingWrites++;
       closeSheet();
-      toast(res.message, 'success');
-      resetObatForm(F.jenis);
+      toast('Tersimpan ✓', 'success');
+      resetObatForm(jenis);
       renderObat();
+      antreanTulis(() => call('simpanObatVaksin', App.token, payload)).then(res => {
+        pendingWrites = Math.max(0, pendingWrites - 1);
+        if (res) { if (App.page === 'obat') renderObat(); return; }
+        App.obat.form = formLama;
+        if (App.page === 'obat') renderObat();
+        toast('Simpan dibatalkan: ' + (App.lastError || 'server tidak merespons') + ' Data belum tersimpan, silakan kirim ulang.', 'error');
+      });
     }
   });
 }
@@ -2484,7 +2520,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v4.5 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v4.6 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();
