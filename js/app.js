@@ -665,7 +665,15 @@ function logTelurRows(rec) {
   const it = log.split(';').map(x => x.split('|'));
   if (it.length < 1) return [];
   return it.slice(-12).map((x, i) => ['Input ' + (it.length > 12 ? it.length - 12 + i + 1 : i + 1) + ' • ' + x[0],
-    fInt(x[1]) + ' tray' + (Number(x[2]) ? ' + ' + fInt(x[2]) + ' butir' : '') + ' • ' + fDec(Number(x[3]), 1) + ' kg']);
+    fInt(x[1]) + ' tray • ' + fInt(x[2]) + ' butir • ' + fDec(Number(x[3]), 1) + ' kg']);
+}
+/** Butir untuk satu input eggtray: isi kolom Butir bila diisi, kalau kosong = eggtray × isi per tray. */
+function butirEff(t, idButir, isi) {
+  const el = $('#' + idButir);
+  const raw = el ? String(el.value).trim() : '';
+  if (raw === '') return Math.round((t || 0) * isi);
+  const v = Number(raw.replace(',', '.'));
+  return isNaN(v) ? NaN : v;
 }
 /** Form tambahan eggtray ke rekap hari ini. */
 function tambahInputSheet() {
@@ -675,7 +683,7 @@ function tambahInputSheet() {
     '<p class="muted sm">Ditambahkan ke rekap hari ini. Saat ini: <strong>' + fInt(rec.telur_butir) + ' butir • ' + fDec(rec.telur_kg, 1) + ' kg</strong>.</p>' +
     '<div class="form-grid two" style="margin-top:10px">' +
     '<div><label class="lbl" for="ti_tray">Eggtray</label><input id="ti_tray" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="mis. 8" oninput="hitungTambahInput()"></div>' +
-    '<div><label class="lbl" for="ti_lepas">Butir lepas</label><input id="ti_lepas" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="0" oninput="hitungTambahInput()"></div>' +
+    '<div><label class="lbl" for="ti_lepas">Butir</label><input id="ti_lepas" class="input" type="number" inputmode="numeric" min="0" step="1" placeholder="0" oninput="hitungTambahInput()"></div>' +
     '<div><label class="lbl" for="ti_kg">Berat (kg)</label><input id="ti_kg" class="input" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0" oninput="hitungTambahInput()"></div></div>' +
     '<p class="field-hint" id="ti_info" style="margin-top:10px"></p>' +
     '<div class="sheet-actions"><button class="btn btn-soft" onclick="closeSheet()">Batal</button>' +
@@ -686,20 +694,22 @@ function hitungTambahInput() {
   const rec = App.input.ctx && App.input.ctx.catatan, el = $('#ti_info');
   if (!rec || !el) return;
   const isi = cfgNum('butir_per_tray', 30) || 30;
-  const t = numVal('ti_tray') || 0, l = numVal('ti_lepas') || 0, k = numVal('ti_kg') || 0;
-  const butir = rec.telur_butir + Math.round(t * isi) + l, kg = Math.round((rec.telur_kg + k) * 100) / 100;
-  el.textContent = 'Tambahan ' + fInt(Math.round(t * isi) + l) + ' butir. Total jadi ' + fInt(butir) + ' butir • ' + fDec(kg, 1) + ' kg' + (butir > 0 && kg > 0 ? ' • ' + fDec(kg * 1000 / butir, 1) + ' gr/butir' : '') + '.';
+  const t = numVal('ti_tray') || 0, k = numVal('ti_kg') || 0;
+  const l = butirEff(t, 'ti_lepas', isi);
+  const butir = rec.telur_butir + l, kg = Math.round((rec.telur_kg + k) * 100) / 100;
+  el.textContent = 'Tambahan ' + fInt(l) + ' butir. Total jadi ' + fInt(butir) + ' butir • ' + fDec(kg, 1) + ' kg' + (butir > 0 && kg > 0 ? ' • ' + fDec(kg * 1000 / butir, 1) + ' gr/butir' : '') + '.';
 }
 async function simpanTambahInput() {
   const ctx = App.input.ctx;
-  const t = numVal('ti_tray'), l = numVal('ti_lepas'), k = numVal('ti_kg');
+  const t = numVal('ti_tray'), k = numVal('ti_kg');
+  const l = butirEff(t || 0, 'ti_lepas', cfgNum('butir_per_tray', 30) || 30);
   const ok = v => isNaN(v) || (v >= 0 && Number.isInteger(v));
-  if (!ok(t) || !ok(l)) { toast('Eggtray dan butir lepas harus bilangan bulat (0 atau lebih).', 'error'); return; }
+  if (!ok(t) || isNaN(l) || !ok(l)) { toast('Eggtray dan butir harus bilangan bulat (0 atau lebih).', 'error'); return; }
   if (!isNaN(k) && k < 0) { toast('Berat tidak boleh negatif.', 'error'); return; }
   if (!((t || 0) > 0 || (l || 0) > 0)) { toast('Isi minimal 1 eggtray atau 1 butir.', 'error'); return; }
   const btn = $('#ti_save');
   setBusyBtn(btn, true, 'Menyimpan...');
-  const res = await call('tambahTelurHarian', App.token, { flok_id: ctx.flok.flok_id, telur_tray: t || 0, telur_butir_lepas: l || 0, telur_kg: isNaN(k) ? 0 : k });
+  const res = await call('tambahTelurHarian', App.token, { flok_id: ctx.flok.flok_id, telur_tray: t || 0, telur_butir_lepas: l, telur_kg: isNaN(k) ? 0 : k });
   setBusyBtn(btn, false);
   if (!res) return;
   closeSheet();
@@ -711,7 +721,7 @@ function lockedCard(rec, tanggal) {
   const tot = rec.deplesi_mati + rec.deplesi_afkir;
   const rows = [
     ['Telur', fInt(rec.telur_butir) + ' butir'],
-    ...(rec.telur_tray !== null && rec.telur_tray !== undefined && rec.telur_tray !== '' ? [['Eggtray', fInt(rec.telur_tray) + ' tray + ' + fInt(rec.telur_butir_lepas) + ' butir']] : []),
+    ...(rec.telur_tray !== null && rec.telur_tray !== undefined && rec.telur_tray !== '' ? [['Eggtray', fInt(rec.telur_tray) + ' tray • ' + fInt(rec.telur_butir) + ' butir']] : []),
     ...logTelurRows(rec),
     ['Rincian grade', gradeTxt(rec) || (rec.telur_tray !== null && rec.telur_tray !== undefined && rec.telur_tray !== '' ? 'Tidak dirinci (input eggtray)' : 'Tidak dirinci (data lama)')],
     ...(rec.telur_a_kg !== null && rec.telur_a_kg !== undefined && gradeButirTxt(rec) ? [['Butir per grade', gradeButirTxt(rec)]] : []),
@@ -782,7 +792,7 @@ function telurPemilikCard(F) {
 }
 /** Jumlah eggtray bawaan untuk baris "Tambah input" (satu putaran pengumpulan = 8 eggtray). */
 const TRAY_PER_INPUT = 8;
-/** Kartu telur ANAK KANDANG: beberapa input (eggtray + butir lepas + kg), dijumlahkan otomatis. */
+/** Kartu telur ANAK KANDANG: beberapa input (eggtray + butir + kg), dijumlahkan otomatis. */
 function telurAnakCard(F) {
   const isi = cfgNum('butir_per_tray', 30) || 30;
   const rows = F.rows && F.rows.length ? F.rows : [{ tray: '', lepas: '', kgt: '' }];
@@ -796,9 +806,9 @@ function telurAnakCard(F) {
     '<div class="row-between" style="margin-bottom:6px"><strong style="font-size:13px">Input ke-' + (i + 1) + '</strong>' +
     '<span class="row gap8"><small class="muted" id="d_sub_' + i + '"></small>' +
     (rows.length > 1 ? '<button type="button" class="link-btn" onclick="hapusBarisTray(' + i + ')" aria-label="Hapus input ke-' + (i + 1) + '"><i class="bi bi-trash"></i> Hapus</button>' : '') + '</span></div>' +
-    '<div class="grade-grid">' + box('tray_' + i, 'EGGTRAY', r.tray, 'var(--ok-text)', 1, false, 'tray') + box('lepas_' + i, 'BUTIR LEPAS', r.lepas, 'var(--gold-text)', 1, false, 'butir') + box('kgt_' + i, 'KG', r.kgt, 'var(--coral-text)', 1, true, 'kg') + '</div></div>').join('');
+    '<div class="grade-grid">' + box('tray_' + i, 'EGGTRAY', r.tray, 'var(--ok-text)', 1, false, 'tray') + box('lepas_' + i, 'BUTIR', r.lepas, 'var(--gold-text)', 1, false, 'butir') + box('kgt_' + i, 'KG', r.kgt, 'var(--coral-text)', 1, true, 'kg') + '</div></div>').join('');
   return '<section class="card"><div class="card-head"><span class="ico-badge gold"><i class="bi bi-egg-fried"></i></span>' +
-    '<div><h3>Hasil Telur Hari Ini</h3><p class="muted sm">Isi eggtray, butir lepas, dan kg. Tekan Tambah input untuk putaran berikutnya.</p></div><span class="badge b-gold">Fokus Utama</span></div>' +
+    '<div><h3>Hasil Telur Hari Ini</h3><p class="muted sm">Isi eggtray, total butir, dan kg. Tekan Tambah input untuk putaran berikutnya.</p></div><span class="badge b-gold">Fokus Utama</span></div>' +
     baris +
     '<button type="button" class="btn btn-soft btn-block" style="margin-top:14px" onclick="tambahBarisTray()"><i class="bi bi-plus-circle"></i> Tambah input (+' + TRAY_PER_INPUT + ' eggtray)</button>' +
     '<div class="est" style="margin-top:14px" aria-live="polite"><i class="bi bi-egg-fried"></i><span>Total telur hari ini</span><strong id="d_totalTelur">0 butir</strong></div>' +
@@ -910,14 +920,15 @@ function updateDerived() {
     const isi = cfgNum('butir_per_tray', 30) || 30;
     let tray = 0, lepas = 0, jml = 0;
     (App.input.form.rows || []).forEach((r, i) => {
-      const t = numVal('f_tray_' + i) || 0, l = numVal('f_lepas_' + i) || 0, k = numVal('f_kgt_' + i) || 0;
+      const t = numVal('f_tray_' + i) || 0, k = numVal('f_kgt_' + i) || 0;
+      const l = butirEff(t, 'f_lepas_' + i, isi) || 0;
       tray += t; lepas += l; kg += k; jml++;
       const sub = $('#d_sub_' + i);
-      if (sub) sub.textContent = (t || l || k) ? fInt(Math.round(t * isi) + l) + ' butir • ' + fDec(k, 1) + ' kg' : '';
+      if (sub) sub.textContent = (t || l || k) ? fInt(l) + ' butir • ' + fDec(k, 1) + ' kg' : '';
     });
     kg = Math.round(kg * 100) / 100;
-    telur = Math.round(tray * isi) + lepas;
-    $('#d_totalTelur').textContent = fInt(tray) + ' tray + ' + fInt(lepas) + ' butir = ' + fInt(telur) + ' butir';
+    telur = lepas;
+    $('#d_totalTelur').textContent = fInt(tray) + ' tray • ' + fInt(telur) + ' butir';
     $('#d_gradeMix').textContent = jml + ' input • 1 eggtray = ' + fInt(isi) + ' butir • total berat ' + fDec(kg, 1) + ' kg';
   }
   const mati = numVal('f_mati') || 0, afkir = numVal('f_afkir') || 0, pakan = numVal('f_pakan');
@@ -979,23 +990,25 @@ function submitInput() {
     if (bRaw === '') errs.push(['f_butir', 'Isi total butir telur hari ini (boleh 0).']);
     else { telur = keAngka(bRaw); if (!bulat(telur)) errs.push(['f_butir', 'Total butir harus bilangan bulat (0 atau lebih).']); }
   } else {
-    // Anak kandang: beberapa input (eggtray + butir lepas + kg) dijumlahkan
+    // Anak kandang: beberapa input (eggtray + butir + kg) dijumlahkan
     const n = (App.input.form.rows || []).length;
     const adaIsi = [];
     for (let i = 0; i < n; i++) {
       const raw = ['f_tray_' + i, 'f_lepas_' + i, 'f_kgt_' + i].map(angkaRaw);
       if (raw.every(x => x === '')) continue;          // baris kosong dilewati
       adaIsi.push(i);
-      const t = keAngka(raw[0]), l = keAngka(raw[1]), k = Math.round(keAngka(raw[2]) * 100) / 100;
+      const t = keAngka(raw[0]);
+      const l = raw[1] === '' ? Math.round((t || 0) * (cfgNum('butir_per_tray', 30) || 30)) : keAngka(raw[1]);
+      const k = Math.round(keAngka(raw[2]) * 100) / 100;
       if (!bulat(t)) errs.push(['f_tray_' + i, 'Input ke-' + (i + 1) + ': eggtray harus bilangan bulat (0 atau lebih).']);
-      if (!bulat(l)) errs.push(['f_lepas_' + i, 'Input ke-' + (i + 1) + ': butir lepas harus bilangan bulat (0 atau lebih).']);
+      if (!bulat(l)) errs.push(['f_lepas_' + i, 'Input ke-' + (i + 1) + ': butir harus bilangan bulat (0 atau lebih).']);
       if (isNaN(k) || k < 0) errs.push(['f_kgt_' + i, 'Input ke-' + (i + 1) + ': berat harus angka 0 atau lebih (kg).']);
       if (!errs.length) { tray += t; lepas += l; kgFinal += k; rincianInput.push({ t: t, l: l, k: k }); }
     }
-    if (!adaIsi.length) errs.push(['f_tray_0', 'Isi jumlah eggtray, butir lepas, dan kg. Boleh 0.']);
+    if (!adaIsi.length) errs.push(['f_tray_0', 'Isi jumlah eggtray, total butir, dan kg. Boleh 0.']);
     if (!errs.length) {
       kgFinal = Math.round(kgFinal * 100) / 100;
-      telur = Math.round(tray * (cfgNum('butir_per_tray', 30) || 30)) + lepas;
+      telur = lepas;
     }
   }
   if (!errs.length) {
@@ -1025,7 +1038,7 @@ function submitInput() {
     ? [['Total butir', fInt(telur) + ' butir'], ['Total berat telur', fDec(kgFinal, 1) + ' kg'],
       ['Rincian grade', 'A ' + fDec(gNum[0], 1) + ' • B ' + fDec(gNum[1], 1) + ' • BS ' + fDec(gNum[2], 1) + ' kg'],
       ['Butir per grade', 'A ' + fInt(bt.a) + ' • B ' + fInt(bt.b) + ' • BS ' + fInt(bt.bs)]]
-    : [['Eggtray', fInt(tray) + ' tray + ' + fInt(lepas) + ' butir'], ...(rincianInput.length > 1 ? [['Rincian input', rincianInput.length + ' input: ' + rincianInput.map(x => x.t).join(' + ') + ' tray']] : []), ['Total butir', fInt(telur) + ' butir'], ['Total berat telur', fDec(kgFinal, 1) + ' kg']];
+    : [['Eggtray', fInt(tray) + ' tray • ' + fInt(lepas) + ' butir'], ...(rincianInput.length > 1 ? [['Rincian input', rincianInput.length + ' input: ' + rincianInput.map(x => x.t).join(' + ') + ' tray']] : []), ['Total butir', fInt(telur) + ' butir'], ['Total berat telur', fDec(kgFinal, 1) + ' kg']];
   confirmSheet({
     title: 'Cek Sebelum Simpan',
     note: owner ? '' : 'Setelah disimpan, data tidak dapat diubah oleh anak kandang. Pastikan angkanya benar.',
