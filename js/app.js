@@ -451,11 +451,12 @@ async function doLogin(ev) {
   const remember = $('#lg_remember').checked;
   setBusyBtn(btn, true, 'Memeriksa...');
   try {
-    const res = await api('loginPin', u, p);
+    const res = await api('loginPin', u, p, true);   // v4.8: sekaligus data awal (1 putaran)
     if (!res.success) { showLoginErr(res.message); return; }
     App.token = res.data.token;
     if (remember) store.set('agl_token', App.token); else store.del('agl_token');
-    await enterApp();
+    if (res.data.boot && res.data.boot.user && res.data.boot.floks) tampilkanApp(res.data.boot, res.data.pra);
+    else await enterApp();   // server versi lama: cara lama
   } catch (e) {
     showLoginErr('Tidak dapat terhubung ke server. Periksa koneksi internet Anda.');
   } finally {
@@ -475,7 +476,7 @@ async function enterApp() {
 }
 
 /** Pasang data awal, bangun kerangka aplikasi, buka halaman pertama, lalu muat menu lain di latar. */
-function tampilkanApp(d) {
+function tampilkanApp(d, pra) {
   App.user = d.user; App.config = d.config; App.floks = d.floks; App.petugas = d.petugas;
   store.set('agl_boot', JSON.stringify(d));
   $('#loginView').hidden = true;
@@ -483,6 +484,10 @@ function tampilkanApp(d) {
   $('#appShell').hidden = false;
   buildShell();
   swrMuat();
+  (pra || []).forEach(x => {   // data halaman dari respons login → tampil seketika
+    if (x && x.r && x.r.success) SWR[swrKey([x.f, App.token].concat(x.a))] = { res: x.r, t: Date.now() };
+  });
+  swrSimpan();
   navigateTo(isOwner() ? 'dashboard' : 'input');
   prefetchHalaman();
 }
@@ -2527,7 +2532,7 @@ function renderProfil() {
     '<label class="lbl" for="p_ulang">Ulangi PIN Baru</label><input id="p_ulang" class="input" type="password" inputmode="numeric" maxlength="8" autocomplete="new-password">' +
     '<button class="btn btn-primary btn-block" id="p_save" style="margin-top:16px" onclick="savePin()">Ganti PIN</button></section>' +
     '<button class="btn btn-soft btn-block" onclick="logout()"><i class="bi bi-box-arrow-right"></i> Keluar</button>' +
-    '<p class="foot-note">Jatmiko Farm Layer v4.7 • Zona waktu WIB</p>';
+    '<p class="foot-note">Jatmiko Farm Layer v4.8 • Zona waktu WIB</p>';
 }
 async function savePin() {
   const lama = $('#p_lama').value.trim(), baru = $('#p_baru').value.trim(), ulang = $('#p_ulang').value.trim();
